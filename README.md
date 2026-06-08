@@ -107,6 +107,28 @@ Reinicie o backend local.
 
 ---
 
+## Rede corporativa bloqueia porta 9876?
+
+Se `curl http://31.97.167.75:9876/health` falha no PC mas porta 80 funciona,
+use **nginx** (path `/cvps/`):
+
+```bash
+cd /opt/c-vps-agent
+git pull
+sudo bash setup-nginx.sh
+# inclua no nginx do finmas: include snippets/c-vps-agent.conf;
+sudo nginx -t && sudo systemctl reload nginx
+curl http://127.0.0.1/cvps/health
+```
+
+No `backend/config.py` local:
+
+```python
+VPS_AGENT_URL = "http://31.97.167.75/cvps"
+```
+
+---
+
 ## Comandos uteis
 
 ```bash
