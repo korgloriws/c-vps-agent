@@ -1,0 +1,15 @@
+services:
+  agent:
+    build: .
+    container_name: c-vps-agent
+    restart: unless-stopped
+    ports:
+      - "9876:9876"
+    environment:
+      HOST_ROOT: /host
+      AGENT_SECRET: ${AGENT_SECRET:-cvps_agent_7f3a9b2c1d8e4f6a}
+    volumes:
+      # Disco e projetos do host (/opt/finmas, etc.)
+      - /:/host:ro
+      # Docker do host (containers, imagens)
+      - /var/run/docker.sock:/var/run/docker.sock
