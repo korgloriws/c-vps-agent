@@ -1,97 +1,142 @@
 #!/bin/bash
-# Adiciona location /cvps/ DENTRO do server do finmas.
-# O Finmas em / nao e alterado — so encaminha /cvps/ para o agente.
+# Adiciona location /cvps/ — Finmas em / nao e alterado.
 set -e
 
 AGENT_CTR="c-vps-agent"
 AGENT_PORT="9876"
 MARKER="# C-VPS-AGENT-PROXY"
 
+insert_cvps_block() {
+  local file="$1"
+  if grep -q "$MARKER" "$file"; then
+    echo "[OK] Proxy ja existe em $file"
+    return 0
+  fi
+  python3 - "$file" "$MARKER" "$AGENT_CTR" "$AGENT_PORT" <<'PY'
+import sys
+path, marker, agent, port = sys.argv[1:5]
+text = open(path, encoding="utf-8").read()
+block = f"""
+    {marker}
+    location /cvps/ {{
+        proxy_pass http://{agent}:{port}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 120s;
+    }}
+"""
+for needle in ("location / {", "location /{"):
+    if needle in text:
+        text = text.replace(needle, block + "\n    " + needle, 1)
+        open(path, "w", encoding="utf-8").write(text)
+        print(f"Inserido em {path} antes de location /")
+        sys.exit(0)
+# fallback: dentro do primeiro server {
+import re
+m = re.search(r"server\s*\{", text)
+if not m:
+    print("Nao achei server { nem location /", file=sys.stderr)
+    sys.exit(1)
+pos = m.end()
+text = text[:pos] + block + text[pos:]
+open(path, "w", encoding="utf-8").write(text)
+print(f"Inserido em {path} apos server {{")
+PY
+}
+
+connect_agent_network() {
+  local nginx_ctr="$1"
+  local net
+  net=$(docker inspect "$nginx_ctr" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' | head -1)
+  if [ -n "$net" ]; then
+    docker network connect "$net" "$AGENT_CTR" 2>/dev/null || true
+    echo "Rede Docker: $net"
+  fi
+}
+
+install_docker_nginx() {
+  local nginx_ctr="$1"
+  echo "Modo: nginx no container $nginx_ctr"
+  connect_agent_network "$nginx_ctr"
+
+  local conf=""
+  for p in /etc/nginx/conf.d/default.conf /etc/nginx/nginx.conf; do
+    docker exec "$nginx_ctr" test -f "$p" 2>/dev/null && conf="$p" && break
+  done
+  if [ -z "$conf" ]; then
+    conf=$(docker exec "$nginx_ctr" sh -c 'ls /etc/nginx/conf.d/*.conf 2>/dev/null | head -1')
+  fi
+  [ -n "$conf" ] || { echo "[ERRO] conf nginx nao encontrada no container"; exit 1; }
+
+  local tmp
+  tmp=$(mktemp)
+  docker exec "$nginx_ctr" cat "$conf" > "$tmp"
+  insert_cvps_block "$tmp"
+  docker cp "$tmp" "${nginx_ctr}:${conf}"
+  rm -f "$tmp"
+
+  docker exec "$nginx_ctr" nginx -t
+  docker exec "$nginx_ctr" nginx -s reload
+}
+
+install_host_nginx() {
+  echo "Modo: nginx no host (Linux)"
+  local conf=""
+  for p in /etc/nginx/sites-enabled/default /etc/nginx/conf.d/default.conf; do
+    [ -f "$p" ] && conf="$p" && break
+  done
+  [ -n "$conf" ] || { echo "[ERRO] nginx host sem default.conf"; ls /etc/nginx/sites-enabled/; exit 1; }
+
+  cp "$conf" "${conf}.bak.cvps"
+  # Host nginx alcanca agente em 127.0.0.1:9876
+  AGENT_CTR="127.0.0.1"
+  insert_cvps_block "$conf"
+  AGENT_CTR="c-vps-agent"
+  nginx -t
+  systemctl reload nginx
+}
+
+find_port80_container() {
+  docker ps --format '{{.Names}}' | while read -r name; do
+    docker port "$name" 2>/dev/null | grep -qE '80/tcp' && echo "$name" && return
+  done
+}
+
 echo "=== C-VPS :: proxy /cvps/ (finmas intacto em /) ==="
 
-# 1) Agente rodando
 if ! docker ps --format '{{.Names}}' | grep -qx "$AGENT_CTR"; then
-  echo "[ERRO] Container $AGENT_CTR nao esta rodando."
-  echo "       cd /opt/c-vps-agent && docker compose up -d"
+  echo "[ERRO] Rode: cd /opt/c-vps-agent && docker compose up -d"
   exit 1
 fi
 
-# 2) Achar nginx do finmas
 NGINX_CTR="${NGINX_CTR:-}"
+
 if [ -z "$NGINX_CTR" ]; then
-  NGINX_CTR=$(docker ps --format '{{.Names}}' | grep -iE 'nginx|proxy' | grep -vi cvps | head -1)
+  NGINX_CTR=$(docker ps --format '{{.Names}}\t{{.Ports}}' | grep -E '0\.0\.0\.0:80->|:::80->|\*:80->' | cut -f1 | head -1)
 fi
 if [ -z "$NGINX_CTR" ]; then
-  echo "[ERRO] Container nginx nao encontrado."
-  echo "       docker ps"
-  echo "       Depois: NGINX_CTR=nome_do_container bash $0"
-  exit 1
+  NGINX_CTR=$(find_port80_container | head -1)
 fi
-echo "Nginx: $NGINX_CTR"
-
-# 3) Mesma rede Docker (nginx -> c-vps-agent)
-NET=$(docker inspect "$NGINX_CTR" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' | head -1)
-if [ -n "$NET" ]; then
-  docker network connect "$NET" "$AGENT_CTR" 2>/dev/null || true
-  echo "Rede: $NET"
+if [ -z "$NGINX_CTR" ]; then
+  NGINX_CTR=$(docker ps --format '{{.Names}}' | grep -iE 'nginx|proxy|caddy|traefik|web' | grep -vi cvps | head -1)
 fi
 
-# 4) Achar arquivo de config
-CONF_PATH=""
-for p in \
-  /etc/nginx/conf.d/default.conf \
-  /etc/nginx/nginx.conf \
-  /etc/nginx/conf.d/finmas.conf; do
-  if docker exec "$NGINX_CTR" test -f "$p" 2>/dev/null; then
-    CONF_PATH="$p"
-    break
-  fi
-done
-if [ -z "$CONF_PATH" ]; then
-  CONF_PATH=$(docker exec "$NGINX_CTR" sh -c 'ls /etc/nginx/conf.d/*.conf 2>/dev/null | head -1')
-fi
-if [ -z "$CONF_PATH" ]; then
-  echo "[ERRO] Arquivo nginx nao encontrado no container."
-  docker exec "$NGINX_CTR" find /etc/nginx -name '*.conf' 2>/dev/null || true
-  exit 1
-fi
-echo "Config: $CONF_PATH"
-
-TMP=$(mktemp)
-docker exec "$NGINX_CTR" cat "$CONF_PATH" > "$TMP"
-
-if grep -q "$MARKER" "$TMP"; then
-  echo "[OK] Proxy /cvps/ ja configurado."
+if [ -n "$NGINX_CTR" ]; then
+  install_docker_nginx "$NGINX_CTR"
+elif command -v nginx >/dev/null && systemctl is-active --quiet nginx 2>/dev/null; then
+  install_host_nginx
 else
-  BLOCK="
-    $MARKER
-    location /cvps/ {
-        proxy_pass http://${AGENT_CTR}:${AGENT_PORT}/;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_read_timeout 120s;
-    }
-"
-  # Inserir ANTES do primeiro "location /" (SPA finmas)
-  python3 - "$TMP" "$BLOCK" <<'PY'
-import sys
-path, block = sys.argv[1], sys.argv[2]
-text = open(path, encoding="utf-8").read()
-needle = "location /"
-if needle not in text:
-    print("location / nao encontrado — cole manualmente o bloco /cvps/", file=sys.stderr)
-    sys.exit(1)
-text = text.replace(needle, block + "\n    " + needle, 1)
-open(path, "w", encoding="utf-8").write(text)
-PY
-  docker cp "$TMP" "${NGINX_CTR}:${CONF_PATH}"
-  echo "Bloco /cvps/ inserido em $CONF_PATH"
+  echo "[ERRO] Nao achei quem serve a porta 80."
+  echo ""
+  echo "Rode e me envie a saida:"
+  echo "  bash diagnose.sh"
+  echo ""
+  echo "Ou informe o container manualmente:"
+  echo "  docker ps"
+  echo "  NGINX_CTR=nome_do_container bash safe-nginx-install.sh"
+  exit 1
 fi
-rm -f "$TMP"
-
-docker exec "$NGINX_CTR" nginx -t
-docker exec "$NGINX_CTR" nginx -s reload
 
 echo ""
 echo "=== Testes ==="
@@ -101,5 +146,4 @@ echo -n "Agente (/cvps/):  "
 curl -s http://127.0.0.1/cvps/health
 echo ""
 IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-echo ""
-echo "Painel local: VPS_AGENT_URL = \"http://${IP:-31.97.167.75}/cvps\""
+echo "Painel: VPS_AGENT_URL = \"http://${IP:-31.97.167.75}/cvps\""

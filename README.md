@@ -26,7 +26,16 @@ curl http://127.0.0.1:9876/health
 
 ```bash
 cd /opt/c-vps-agent
+git pull
+bash diagnose.sh          # se falhar, envie a saida
 bash safe-nginx-install.sh
+```
+
+Se der "nginx nao encontrado":
+
+```bash
+docker ps
+NGINX_CTR=nome_do_container_com_porta_80 bash safe-nginx-install.sh
 ```
 
 Teste:
