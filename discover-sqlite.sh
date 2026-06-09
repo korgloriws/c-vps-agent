@@ -1,5 +1,5 @@
 #!/bin/bash
-# Inventario de arquivos SQLite e pastas de backup (leitura apenas).
+# Inventario SQLite + uso de disco Docker (/var/lib). Somente leitura.
 # Em Docker: HOST_ROOT=/host
 
 HOST_ROOT="${HOST_ROOT:-/}"
@@ -18,7 +18,9 @@ classify_kind() {
   local f="$1"
   local base
   base=$(basename "$f")
-  if [[ "$f" == */backups/* ]] || [[ "$f" == */backup/* ]]; then
+  if [[ "$f" == *backup_antes_restore* ]]; then
+    echo "backup"
+  elif [[ "$f" == */backups/* ]] || [[ "$f" == */backup/* ]]; then
     echo "backup"
   elif [[ "$base" == *backup* ]] || [[ "$base" == *bak* ]] || [[ "$base" == *.old ]]; then
     echo "backup"
@@ -38,19 +40,44 @@ guess_project() {
   fi
 }
 
-emit_sqlite_file() {
+emit_file() {
   local f="$1"
+  local forced_kind="${2:-}"
   [ -f "$f" ] || return
   local size mtime kind project
   size=$(stat -c '%s' "$f" 2>/dev/null || echo 0)
   mtime=$(stat -c '%Y' "$f" 2>/dev/null || echo 0)
-  kind=$(classify_kind "$f")
+  if [ -n "$forced_kind" ]; then kind="$forced_kind"
+  else kind=$(classify_kind "$f"); fi
   project=$(guess_project "$f")
   echo "$(strip_root "$f")|${size}|${mtime}|${project}|${kind}|$(basename "$f")"
 }
 
+echo "===DOCKER_STORAGE==="
+if [ -d "$ROOT/var/lib/docker" ]; then
+  total=$(du -sb "$ROOT/var/lib/docker" 2>/dev/null | cut -f1)
+  echo "total|$(strip_root "$ROOT/var/lib/docker")|${total:-0}"
+  for d in overlay2 containers volumes image buildkit network; do
+    p="$ROOT/var/lib/docker/$d"
+    [ -d "$p" ] || continue
+    sz=$(du -sb "$p" 2>/dev/null | cut -f1)
+    echo "${d}|$(strip_root "$p")|${sz:-0}"
+  done
+fi
+
+echo "===DOCKER_VOLUME_SIZES==="
+docker volume ls -q 2>/dev/null | while read -r vol; do
+  [ -n "$vol" ] || continue
+  mp=$(docker volume inspect "$vol" --format '{{.Mountpoint}}' 2>/dev/null)
+  [ -n "$mp" ] || continue
+  host_mp="$mp"
+  [[ "$mp" != "$ROOT"* ]] && [ "$ROOT" != "/" ] && host_mp="$ROOT$mp"
+  sz=$(du -sb "$host_mp" 2>/dev/null | cut -f1)
+  echo "${vol}|$(strip_root "$host_mp")|${sz:-0}"
+done
+
 echo "===DOCKER_MOUNTS==="
-for c in $(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -iE 'finmas|c-vps' || true); do
+for c in $(docker ps -a --format '{{.Names}}' 2>/dev/null); do
   docker inspect "$c" --format '{{range .Mounts}}{{.Type}}|{{.Source}}|{{.Destination}}{{"\n"}}{{end}}' 2>/dev/null \
     | while IFS='|' read -r typ src dst; do
         [ -n "$typ" ] || continue
@@ -59,28 +86,34 @@ for c in $(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -iE 'finmas|c-v
 done
 
 echo "===BACKUP_DIRS==="
-for base in "$ROOT/opt/finmas" "$ROOT/opt" "$ROOT/var/lib/docker/volumes"; do
-  [ -d "$base" ] || continue
-  find "$base" -type d \( -iname '*backup*' -o -iname 'data' \) 2>/dev/null | head -40 | while read -r d; do
-    file_count=$(find "$d" -maxdepth 2 -type f 2>/dev/null | wc -l | tr -d ' ')
-    total_bytes=$(du -sb "$d" 2>/dev/null | cut -f1)
-    echo "$(strip_root "$d")|${file_count}|${total_bytes}"
-  done
+# Pastas de backup reais (sem listar /data inteiro)
+if [ -d "$ROOT/opt/finmas/backups" ]; then
+  d="$ROOT/opt/finmas/backups"
+  file_count=$(find "$d" -type f 2>/dev/null | wc -l | tr -d ' ')
+  total_bytes=$(du -sb "$d" 2>/dev/null | cut -f1)
+  echo "$(strip_root "$d")|${file_count}|${total_bytes}|finmas"
+fi
+find "$ROOT/opt/finmas" -type d -name 'backup_antes_restore_*' 2>/dev/null | while read -r d; do
+  file_count=$(find "$d" -type f 2>/dev/null | wc -l | tr -d ' ')
+  total_bytes=$(du -sb "$d" 2>/dev/null | cut -f1)
+  echo "$(strip_root "$d")|${file_count}|${total_bytes}|finmas_restore"
 done
 
+echo "===FINMAS_BACKUP_FILES==="
+if [ -d "$ROOT/opt/finmas/backups" ]; then
+  find "$ROOT/opt/finmas/backups" -type f 2>/dev/null | while read -r f; do emit_file "$f" backup; done
+fi
+
 echo "===SQLITE_FILES==="
-# Projeto finmas no host
 if [ -d "$ROOT/opt/finmas" ]; then
   find "$ROOT/opt/finmas" -type f \( \
     -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \
     -o -name '*.db-*' -o -name '*.sqlite-*' \
-    -o -iname '*backup*.db' -o -iname '*backup*.sqlite' \
-  \) 2>/dev/null | while read -r f; do emit_sqlite_file "$f"; done
+  \) 2>/dev/null | while read -r f; do emit_file "$f"; done
 fi
 
-# Volumes Docker (onde o banco ativo do finmas costuma morar)
 if [ -d "$ROOT/var/lib/docker/volumes" ]; then
-  find "$ROOT/var/lib/docker/volumes" -maxdepth 6 -type f \( \
+  find "$ROOT/var/lib/docker/volumes" -maxdepth 8 -type f \( \
     -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \
-  \) 2>/dev/null | head -300 | while read -r f; do emit_sqlite_file "$f"; done
+  \) 2>/dev/null | head -300 | while read -r f; do emit_file "$f"; done
 fi

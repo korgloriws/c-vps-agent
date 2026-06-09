@@ -53,11 +53,19 @@ def _parse_sqlite_inventory(raw: str) -> dict:
             }
         )
 
-    backup_dirs = []
+    backup_dirs: list[dict] = []
+    seen_dirs: set[str] = set()
     for line in sections.get("BACKUP_DIRS", "").splitlines():
         if "|" not in line:
             continue
-        path, count_s, bytes_s = line.split("|", 2)
+        parts = line.split("|")
+        if len(parts) < 3:
+            continue
+        path, count_s, bytes_s = parts[0], parts[1], parts[2]
+        category = parts[3] if len(parts) > 3 else "backup"
+        if path in seen_dirs:
+            continue
+        seen_dirs.add(path)
         try:
             total_b = int(bytes_s)
             count = int(count_s)
@@ -69,8 +77,46 @@ def _parse_sqlite_inventory(raw: str) -> dict:
                 "file_count": count,
                 "total_bytes": total_b,
                 "total": _human_size(total_b),
+                "category": category,
             }
         )
+
+    docker_storage = []
+    for line in sections.get("DOCKER_STORAGE", "").splitlines():
+        if "|" not in line:
+            continue
+        name, path, bytes_s = line.split("|", 2)
+        try:
+            total_b = int(bytes_s)
+        except ValueError:
+            total_b = 0
+        docker_storage.append(
+            {
+                "name": name,
+                "path": path,
+                "total_bytes": total_b,
+                "total": _human_size(total_b),
+            }
+        )
+
+    docker_volumes = []
+    for line in sections.get("DOCKER_VOLUME_SIZES", "").splitlines():
+        if "|" not in line:
+            continue
+        vol, path, bytes_s = line.split("|", 2)
+        try:
+            total_b = int(bytes_s)
+        except ValueError:
+            total_b = 0
+        docker_volumes.append(
+            {
+                "volume": vol,
+                "path": path,
+                "total_bytes": total_b,
+                "total": _human_size(total_b),
+            }
+        )
+    docker_volumes.sort(key=lambda x: x["total_bytes"], reverse=True)
 
     mounts = []
     for line in sections.get("DOCKER_MOUNTS", "").splitlines():
@@ -117,18 +163,35 @@ def _parse_sqlite_inventory(raw: str) -> dict:
 
     backup_dirs.sort(key=lambda x: x["total_bytes"], reverse=True)
 
+    backup_bytes = sum(f["size_bytes"] for f in files if f["kind"] == "backup")
+    database_bytes = sum(f["size_bytes"] for f in files if f["kind"] == "database")
+    docker_total = next(
+        (d["total_bytes"] for d in docker_storage if d["name"] == "total"),
+        sum(d["total_bytes"] for d in docker_storage if d["name"] != "total"),
+    )
+
     return {
         "files": sorted(files, key=lambda x: x["size_bytes"], reverse=True),
+        "active_databases": [f for f in files if f["kind"] == "database"],
+        "backup_files": [f for f in files if f["kind"] == "backup"],
         "backup_dirs": backup_dirs,
         "docker_mounts": mounts,
+        "docker_storage": docker_storage,
+        "docker_volumes": docker_volumes,
         "projects": sorted(by_project.values(), key=lambda x: x["project"]),
         "summary": {
             "total_files": len(files),
             "backup_files": sum(1 for f in files if f["kind"] == "backup"),
             "database_files": sum(1 for f in files if f["kind"] == "database"),
-            "total_backup_bytes": sum(f["size_bytes"] for f in files if f["kind"] == "backup"),
-            "total_backup": _human_size(
-                sum(f["size_bytes"] for f in files if f["kind"] == "backup")
+            "total_backup_bytes": backup_bytes,
+            "total_backup": _human_size(backup_bytes),
+            "total_database_bytes": database_bytes,
+            "total_database": _human_size(database_bytes),
+            "docker_var_bytes": docker_total,
+            "docker_var": _human_size(docker_total),
+            "note": (
+                "SQLite do Finmas ocupa poucos MB. "
+                "O disco em /var/lib e quase todo Docker (imagens, camadas, volumes, logs)."
             ),
         },
     }
@@ -142,7 +205,7 @@ def run_sqlite_inventory() -> dict:
         ["bash", str(DISCOVER_SCRIPT)],
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=180,
         check=False,
     )
     raw = result.stdout
