@@ -38,7 +38,12 @@ if [ -z "$CONF" ]; then
 fi
 
 echo "Arquivo: $CONF"
-cp "$CONF" "${CONF}.bak.cvps-$(date +%Y%m%d%H%M)"
+# Backup FORA de sites-enabled (nginx carrega tudo da pasta)
+BKDIR="/etc/nginx/backups-cvps"
+mkdir -p "$BKDIR"
+cp "$CONF" "${BKDIR}/$(basename "$CONF").bak-$(date +%Y%m%d%H%M)"
+# Remover .bak antigos que quebram nginx -t
+rm -f /etc/nginx/sites-enabled/*.bak* /etc/nginx/sites-enabled/*.bak.cvps-* 2>/dev/null || true
 
 if grep -q "$MARKER" "$CONF"; then
   echo "[OK] Bloco /cvps/ ja existe."
