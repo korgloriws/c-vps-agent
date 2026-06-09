@@ -22,21 +22,16 @@ docker compose up -d --build
 curl http://127.0.0.1:9876/health
 ```
 
-## Proxy seguro (1 vez, nao mexe no finmas)
+## Proxy (finmas-app em :8080, nginx no HOST na :80)
 
 ```bash
 cd /opt/c-vps-agent
-git pull
-bash diagnose.sh          # se falhar, envie a saida
-bash safe-nginx-install.sh
+git fetch origin && git reset --hard origin/main   # descarta alteracoes locais
+chmod +x host-nginx-install.sh
+sudo bash host-nginx-install.sh
 ```
 
-Se der "nginx nao encontrado":
-
-```bash
-docker ps
-NGINX_CTR=nome_do_container_com_porta_80 bash safe-nginx-install.sh
-```
+Finmas em `/` nao muda. So adiciona `/cvps/` -> agente `:9876`.
 
 Teste:
 
