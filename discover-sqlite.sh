@@ -53,29 +53,6 @@ emit_file() {
   echo "$(strip_root "$f")|${size}|${mtime}|${project}|${kind}|$(basename "$f")"
 }
 
-echo "===DOCKER_STORAGE==="
-if [ -d "$ROOT/var/lib/docker" ]; then
-  total=$(du -sb "$ROOT/var/lib/docker" 2>/dev/null | cut -f1)
-  echo "total|$(strip_root "$ROOT/var/lib/docker")|${total:-0}"
-  for d in overlay2 containers volumes image buildkit network; do
-    p="$ROOT/var/lib/docker/$d"
-    [ -d "$p" ] || continue
-    sz=$(du -sb "$p" 2>/dev/null | cut -f1)
-    echo "${d}|$(strip_root "$p")|${sz:-0}"
-  done
-fi
-
-echo "===DOCKER_VOLUME_SIZES==="
-docker volume ls -q 2>/dev/null | while read -r vol; do
-  [ -n "$vol" ] || continue
-  mp=$(docker volume inspect "$vol" --format '{{.Mountpoint}}' 2>/dev/null)
-  [ -n "$mp" ] || continue
-  host_mp="$mp"
-  [[ "$mp" != "$ROOT"* ]] && [ "$ROOT" != "/" ] && host_mp="$ROOT$mp"
-  sz=$(du -sb "$host_mp" 2>/dev/null | cut -f1)
-  echo "${vol}|$(strip_root "$host_mp")|${sz:-0}"
-done
-
 echo "===DOCKER_MOUNTS==="
 for c in $(docker ps -a --format '{{.Names}}' 2>/dev/null); do
   docker inspect "$c" --format '{{range .Mounts}}{{.Type}}|{{.Source}}|{{.Destination}}{{"\n"}}{{end}}' 2>/dev/null \

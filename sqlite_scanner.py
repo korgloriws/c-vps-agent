@@ -81,43 +81,6 @@ def _parse_sqlite_inventory(raw: str) -> dict:
             }
         )
 
-    docker_storage = []
-    for line in sections.get("DOCKER_STORAGE", "").splitlines():
-        if "|" not in line:
-            continue
-        name, path, bytes_s = line.split("|", 2)
-        try:
-            total_b = int(bytes_s)
-        except ValueError:
-            total_b = 0
-        docker_storage.append(
-            {
-                "name": name,
-                "path": path,
-                "total_bytes": total_b,
-                "total": _human_size(total_b),
-            }
-        )
-
-    docker_volumes = []
-    for line in sections.get("DOCKER_VOLUME_SIZES", "").splitlines():
-        if "|" not in line:
-            continue
-        vol, path, bytes_s = line.split("|", 2)
-        try:
-            total_b = int(bytes_s)
-        except ValueError:
-            total_b = 0
-        docker_volumes.append(
-            {
-                "volume": vol,
-                "path": path,
-                "total_bytes": total_b,
-                "total": _human_size(total_b),
-            }
-        )
-    docker_volumes.sort(key=lambda x: x["total_bytes"], reverse=True)
-
     mounts = []
     for line in sections.get("DOCKER_MOUNTS", "").splitlines():
         if "|" not in line:
@@ -165,10 +128,6 @@ def _parse_sqlite_inventory(raw: str) -> dict:
 
     backup_bytes = sum(f["size_bytes"] for f in files if f["kind"] == "backup")
     database_bytes = sum(f["size_bytes"] for f in files if f["kind"] == "database")
-    docker_total = next(
-        (d["total_bytes"] for d in docker_storage if d["name"] == "total"),
-        sum(d["total_bytes"] for d in docker_storage if d["name"] != "total"),
-    )
 
     return {
         "files": sorted(files, key=lambda x: x["size_bytes"], reverse=True),
@@ -176,8 +135,6 @@ def _parse_sqlite_inventory(raw: str) -> dict:
         "backup_files": [f for f in files if f["kind"] == "backup"],
         "backup_dirs": backup_dirs,
         "docker_mounts": mounts,
-        "docker_storage": docker_storage,
-        "docker_volumes": docker_volumes,
         "projects": sorted(by_project.values(), key=lambda x: x["project"]),
         "summary": {
             "total_files": len(files),
@@ -187,12 +144,6 @@ def _parse_sqlite_inventory(raw: str) -> dict:
             "total_backup": _human_size(backup_bytes),
             "total_database_bytes": database_bytes,
             "total_database": _human_size(database_bytes),
-            "docker_var_bytes": docker_total,
-            "docker_var": _human_size(docker_total),
-            "note": (
-                "SQLite do Finmas ocupa poucos MB. "
-                "O disco em /var/lib e quase todo Docker (imagens, camadas, volumes, logs)."
-            ),
         },
     }
 
