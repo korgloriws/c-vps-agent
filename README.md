@@ -1,144 +1,67 @@
 # C VPS Agent
 
-Agente HTTP na VPS — escaneia disco, Docker e projetos (ex.: `/opt/finmas`).  
-O painel local chama por HTTP — **nao precisa SSH do seu PC**.
+Agente na VPS em `/opt/c-vps-agent`. **Finmas nao e modificado** (continua em `/`).
 
-Deploy igual ao **finmas**: GitHub + `git pull` + `docker compose`.
+## Por que /cvps/ na porta 80?
 
----
+| Origem | 9876 / 8080 | Porta 80 `/cvps/` |
+|--------|-------------|-------------------|
+| VPS (local) | Funciona | Funciona |
+| Seu PC (rede trabalho) | **Bloqueado** | **Funciona** |
 
-## 1. Criar repositorio no GitHub
-
-Suba **o conteudo desta pasta `agent/`** como raiz do repo (ex.: `c-vps-agent`).
-
-No seu PC:
-
-```powershell
-cd c:\Users\mateus.rodrigues\Downloads\C_vps\agent
-git init
-git add .
-git commit -m "agente c-vps"
-git remote add origin https://github.com/korgloriws/c-vps-agent.git
-git push -u origin main
-```
+O agente roda na **9876** na VPS. O nginx so encaminha `/cvps/` → agente. O Finmas em `/` nao muda.
 
 ---
 
-## 2. Primeira instalacao na VPS
-
-No **terminal do navegador** (hPanel → VPS → Browser terminal):
+## Instalacao
 
 ```bash
-mkdir -p /opt/c-vps-agent
 cd /opt/c-vps-agent
-git clone https://github.com/korgloriws/c-vps-agent.git .
-chmod +x deploy.sh scan.sh
+git pull
 docker compose up -d --build
+curl http://127.0.0.1:9876/health
 ```
 
-**Firewall hPanel:** Accept · TCP · **9876** · Anywhere
+## Proxy seguro (1 vez, nao mexe no finmas)
+
+```bash
+cd /opt/c-vps-agent
+bash safe-nginx-install.sh
+```
 
 Teste:
 
 ```bash
-curl http://127.0.0.1:9876/health
+curl http://127.0.0.1/              # finmas (HTML)
+curl http://127.0.0.1/cvps/health   # agente (JSON)
 ```
 
----
+No PC:
 
-## 3. Atualizar (igual ao finmas)
-
-```bash
-cd /opt/c-vps-agent
-git pull
-docker compose build
-docker compose down
-docker compose up -d
+```powershell
+curl.exe http://31.97.167.75/cvps/health
 ```
 
-Ou use o script:
-
-```bash
-cd /opt/c-vps-agent
-bash deploy.sh
-```
-
-Mesmo padrao do finmas:
-
-```bash
-cd /opt/finmas
-git pull
-docker-compose build
-docker-compose down
-docker-compose up -d
-```
-
----
-
-## 4. Painel local
-
-`backend/config.py`:
-
-```python
-VPS_AGENT_URL = "http://31.97.167.75:9876"
-VPS_AGENT_SECRET = "cvps_agent_7f3a9b2c1d8e4f6a"
-```
-
-Reinicie o backend local.
-
----
-
-## O que o agente enxerga
-
-| Item | Exemplo na sua VPS |
-|------|-------------------|
-| Sistema finmas | `/opt/finmas` (compose + git) |
-| Containers | via Docker socket |
-| Imagens / versoes | tags Docker + git describe |
-| Pastas grandes | `/var`, `/opt`, etc. |
-
----
-
-## SSH?
-
-- **Deploy:** nao precisa SSH do PC — so terminal do hPanel + git (como finmas).
-- **Painel local:** chama o agente por HTTP na porta 9876.
-- **SSH do PC:** opcional; na rede do trabalho costuma estar bloqueado.
-
----
-
-## Rede corporativa bloqueia porta 9876?
-
-Se `curl http://31.97.167.75:9876/health` falha no PC mas porta 80 funciona,
-use **nginx** (path `/cvps/`):
-
-```bash
-cd /opt/c-vps-agent
-git pull
-sudo bash setup-nginx.sh
-# inclua no nginx do finmas: include snippets/c-vps-agent.conf;
-sudo nginx -t && sudo systemctl reload nginx
-curl http://127.0.0.1/cvps/health
-```
-
-No `backend/config.py` local:
+## Painel local
 
 ```python
 VPS_AGENT_URL = "http://31.97.167.75/cvps"
+VPS_AGENT_SECRET = "cvps_agent_7f3a9b2c1d8e4f6a"
 ```
 
 ---
 
-## Comandos uteis
+## Atualizar agente
 
 ```bash
-docker compose -f /opt/c-vps-agent/docker-compose.yml logs -f
-docker compose -f /opt/c-vps-agent/docker-compose.yml ps
-curl -H "Authorization: Bearer cvps_agent_7f3a9b2c1d8e4f6a" http://127.0.0.1:9876/disk-detail
+cd /opt/c-vps-agent
+git pull
+docker compose up -d --build
 ```
 
-## Instalacao sem Docker (alternativa)
+## Remover proxy (se precisar)
 
 ```bash
-bash install.sh   # usa systemd + python nativo
+docker exec NOME_NGINX rm /etc/nginx/conf.d/zz-cvps-agent.conf
+docker exec NOME_NGINX nginx -s reload
 ```

@@ -4,6 +4,7 @@ services:
     container_name: c-vps-agent
     restart: unless-stopped
     ports:
+      # Interno 9876. Do PC use /cvps/ na porta 80 (rede corporativa bloqueia 9876/8080).
       - "9876:9876"
     environment:
       HOST_ROOT: /host
