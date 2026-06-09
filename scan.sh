@@ -28,9 +28,13 @@ else
 fi
 
 echo "===DU_ROOT==="
-du -xhd1 "$ROOT" 2>/dev/null | sort -hr | head -20 | while IFS=$'\t' read -r size path; do
-  echo -e "${size}\t$(strip_root "$path")"
-done
+# Pastas de topo apenas (du em / inteiro demora varios minutos)
+for d in "$ROOT/opt" "$ROOT/var" "$ROOT/home" "$ROOT/usr" "$ROOT/root" "$ROOT/srv" "$ROOT/tmp"; do
+  [ -d "$d" ] || continue
+  du -sh "$d" 2>/dev/null | while IFS=$'\t' read -r size path; do
+    echo -e "${size}\t$(strip_root "$path")"
+  done
+done | sort -hr
 
 echo "===DU_VAR==="
 [ -d "$ROOT/var" ] && du -xhd1 "$ROOT/var" 2>/dev/null | sort -hr | head -15 | while IFS=$'\t' read -r size path; do

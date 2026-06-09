@@ -18,7 +18,7 @@ def run_disk_scan() -> dict:
         ["bash", str(SCAN_SCRIPT)],
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=300,
         check=False,
     )
     raw = result.stdout
