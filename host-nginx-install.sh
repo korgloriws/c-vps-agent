@@ -1,55 +1,55 @@
 #!/bin/bash
-# Finmas: finmas-app em 127.0.0.1:8080 (Docker)
-# Porta 80: nginx no HOST — adiciona so /cvps/ -> agente :9876
+# Host nginx :80 -> finmas-app :8080
+# Adiciona /cvps/ -> agente :9876 ANTES do location /
 set -e
 
 MARKER="# C-VPS-AGENT-PROXY"
 
-echo "=== C-VPS :: nginx no HOST (finmas intacto em /) ==="
+echo "=== C-VPS :: nginx HOST ==="
 
 if ! curl -sf http://127.0.0.1:9876/health >/dev/null; then
-  echo "[ERRO] Agente offline. Rode: cd /opt/c-vps-agent && docker compose up -d"
+  echo "[ERRO] Agente offline: docker compose up -d em /opt/c-vps-agent"
   exit 1
 fi
 
 if ! command -v nginx >/dev/null; then
-  echo "[ERRO] nginx nao instalado no host."
+  echo "[ERRO] nginx nao encontrado no host."
   exit 1
 fi
 
+# Achar config que manda trafego pro finmas (8080)
 CONF=""
 for p in /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf; do
   [ -f "$p" ] || continue
-  if grep -qE '8080|finmas|proxy_pass' "$p" 2>/dev/null; then
+  if grep -qE '8080|finmas' "$p" 2>/dev/null; then
     CONF="$p"
     break
   fi
 done
 if [ -z "$CONF" ]; then
-  for p in /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/finmas \
-           /etc/nginx/conf.d/default.conf; do
+  for p in /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/finmas; do
     [ -f "$p" ] && CONF="$p" && break
   done
 fi
 if [ -z "$CONF" ]; then
-  echo "[ERRO] Arquivo nginx nao encontrado."
-  ls -la /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ 2>/dev/null
+  echo "[ERRO] Config nginx nao encontrada."
+  ls -la /etc/nginx/sites-enabled/ 2>/dev/null
   exit 1
 fi
 
-echo "Config: $CONF"
-cp "$CONF" "${CONF}.bak.cvps-$(date +%Y%m%d)"
+echo "Arquivo: $CONF"
+cp "$CONF" "${CONF}.bak.cvps-$(date +%Y%m%d%H%M)"
 
 if grep -q "$MARKER" "$CONF"; then
-  echo "[OK] /cvps/ ja configurado."
+  echo "[OK] Bloco /cvps/ ja existe."
 else
   python3 - "$CONF" "$MARKER" <<'PY'
-import sys
+import sys, re
 path, marker = sys.argv[1], sys.argv[2]
 text = open(path, encoding="utf-8").read()
 block = f"""
     {marker}
-    location /cvps/ {{
+    location ^~ /cvps/ {{
         proxy_pass http://127.0.0.1:9876/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -57,30 +57,37 @@ block = f"""
         proxy_read_timeout 120s;
     }}
 """
-for needle in ("location / {", "location /{", "location / "):
-    if needle in text:
-        text = text.replace(needle, block + "\n    " + needle, 1)
-        open(path, "w", encoding="utf-8").write(text)
-        print("Inserido antes de location /")
-        sys.exit(0)
-import re
-m = re.search(r"server\s*\{", text)
-if not m:
-    sys.exit("Nao achei server { nem location /")
-text = text[:m.end()] + block + text[m.end():]
+# Inserir antes do primeiro location (finmas em /)
+m = re.search(r"\n\s*location\s", text)
+if m:
+    pos = m.start()
+    text = text[:pos] + "\n" + block + text[pos:]
+else:
+    m = re.search(r"server\s*\{", text)
+    if not m:
+        sys.exit("Nao achei server { nem location")
+    text = text[:m.end()] + block + text[m.end():]
 open(path, "w", encoding="utf-8").write(text)
-print("Inserido apos server {")
+print("Bloco /cvps/ inserido (prioridade ^~)")
 PY
 fi
 
+echo "--- nginx -t ---"
 nginx -t
 systemctl reload nginx
 
 echo ""
-echo "=== Testes ==="
-echo -n "Finmas (/):       "
+echo "=== Teste na VPS (obrigatorio antes do PC) ==="
+echo -n "/cvps/health: "
+R=$(curl -s http://127.0.0.1/cvps/health | head -c 60)
+echo "$R"
+if echo "$R" | grep -q '"ok"'; then
+  echo "[OK] Proxy funcionando."
+else
+  echo "[ERRO] Ainda retorna HTML — envie: cat $CONF"
+  exit 1
+fi
+echo -n "Finmas (/): "
 curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1/
-echo -n "Agente (/cvps/):  "
-curl -s http://127.0.0.1/cvps/health
 echo ""
-echo "Painel: VPS_AGENT_URL = \"http://31.97.167.75/cvps\""
+echo "PC: curl http://31.97.167.75/cvps/health"
