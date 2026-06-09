@@ -9,8 +9,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py config.py scanner.py disk_parser.py scan.sh ./
-RUN chmod +x scan.sh
+COPY main.py config.py scanner.py sqlite_scanner.py disk_parser.py scan.sh discover-sqlite.sh ./
+RUN chmod +x scan.sh discover-sqlite.sh
 
 ENV HOST_ROOT=/host
 EXPOSE 9876
